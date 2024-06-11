@@ -1,12 +1,14 @@
 from dataclasses import dataclass
+import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_absolute_error
 from flask import Flask, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import text
+import random
 
 app = Flask(__name__)
 
@@ -49,40 +51,106 @@ class Sale(db.Model):
     drug_id: Mapped[str]
     sk_time: Mapped[str]
 
+def preprocessing(drug_df):
+    drug_df['tanggal'] = pd.to_datetime(drug_df['tanggal'])
+    drug_df = drug_df.groupby("tanggal")[['quantity','sub_total']].agg('sum')
+    drug_df['tanggal'] = drug_df.index
+    drug_df['tahun'] = drug_df['tanggal'].dt.year
+    drug_df['bulan'] = drug_df['tanggal'].dt.month
+
+    return drug_df
+
+
 def regression_training():
-    totalRevenue = db.engine.connect().execute(text('CALL QuantitySaleByYear(:year)'), {'year': 2024}).all()
-    revenue = [ float(item._asdict()['sub_total']) for item in totalRevenue]
-    quantities = [ float(item._asdict()['total_quantity']) for item in totalRevenue]
+    drug_df = pd.read_csv('datasets/tb_transaction_202406101206.csv')
 
-    X = np.array(quantities).reshape((-1, 1))
-    y = np.array(revenue)
+    drug_df = preprocessing(drug_df)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.4, random_state=123)
+    X = drug_df[['quantity']]
+    y = drug_df['sub_total']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
     model = LinearRegression()
 
-    model.fit(X=X_train, y=y_train)
+    model.fit(X_train, y_train)
 
-    r_sq = model.score(X=X_train, y=y_train)
+    r_sq = model.score(X_train, y_train)
 
     print(f"coefficient of determination: {r_sq}, intercept: {model.intercept_}, coeff: {model.coef_}")
 
-    # y_pred_test = model.predict(X=X_test)
+    y_pred_test = model.predict(X_test)
 
-    # acc = r2_score(y_pred=y_pred_test, y_true=y_test)
+    acc_score = r2_score(y_true=y_test, y_pred=y_pred_test)
+    mae = mean_absolute_error(y_true=y_test, y_pred=y_pred_test)
 
-    # print(acc)
+    print(f"R^2 Score: {acc_score}")
+    print(f"Mean Absolute Error: {mae}")
 
-    quantity_mean = np.array(quantities).mean()
+    y_pred_total = model.predict(drug_df[['quantity']])
+    y_pred_total = np.array([ round(y_pred,0) for y_pred in y_pred_total])
 
-    X_new = np.array([[quantity_mean]])
+    drug_df['sub_total_predict'] = y_pred_total
 
-    y_pred = model.predict(X=X_new)
+    previous_sub_total_df = drug_df[drug_df['bulan'] == 5]
+    total_data = previous_sub_total_df.count()[0]
+    min_quantity = previous_sub_total_df['quantity'].min()
+    max_quantity = previous_sub_total_df['quantity'].max()
 
-    revenue.append(int(y_pred[0]))
+    new_data = []
+    for _ in range(total_data):
+        new_data.append(random.randint(min_quantity, max_quantity))
+
+    new_data = np.array(new_data).reshape(-1,1)
+
+    y_pred = model.predict(new_data)
+    y_pred = np.array([ round(y,0) for y in y_pred])
     
+    result_df = pd.DataFrame({
+        'bulan': drug_df['bulan'].unique(),
+        'quantity': drug_df.groupby('bulan')[['quantity']].agg('sum')['quantity'],
+        'sub_total_true': drug_df.groupby('bulan')[['sub_total']].agg('sum')['sub_total'],
+        'sub_total_predict': drug_df.groupby('bulan')[['sub_total_predict']].agg('sum')['sub_total_predict']
+    })
+
+    revenue = result_df[['sub_total_true']].values.reshape(-1,).tolist()
+
+    revenue.append(y_pred.sum())
+
     return revenue
+    # totalRevenue = db.engine.connect().execute(text('CALL QuantitySaleByYear(:year)'), {'year': 2024}).all()
+    # revenue = [ float(item._asdict()['sub_total']) for item in totalRevenue]
+    # quantities = [ float(item._asdict()['total_quantity']) for item in totalRevenue]
+
+    # X = np.array(quantities).reshape((-1, 1))
+    # y = np.array(revenue)
+
+    # X_train, X_test, y_train, y_test = train_test_split(
+    # X, y, test_size=0.4, random_state=123)
+
+    # model = LinearRegression()
+
+    # model.fit(X=X_train, y=y_train)
+
+    # r_sq = model.score(X=X_train, y=y_train)
+
+    # print(f"coefficient of determination: {r_sq}, intercept: {model.intercept_}, coeff: {model.coef_}")
+
+    # # y_pred_test = model.predict(X=X_test)
+
+    # # acc = r2_score(y_pred=y_pred_test, y_true=y_test)
+
+    # # print(acc)
+
+    # quantity_mean = np.array(quantities).mean()
+
+    # X_new = np.array([[quantity_mean]])
+
+    # y_pred = model.predict(X=X_new)
+
+    # revenue.append(int(y_pred[0]))
+    
+    # return revenue
 
 
 
